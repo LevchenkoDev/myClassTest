@@ -4,12 +4,11 @@ const sequelize = new Sequelize(process.env.DB_CONNECT);
 const Lesson = require('../models/Lesson');
 const Student = require('../models/Student');
 const Teacher = require('../models/Teacher');
-const LessonStudent = require('../models/LessonStudent');
-const LessonTeacher = require('../models/LessonTeacher');
 // Dal
 const LessonTeacherDal = require('../dal/lessonTeachers');
 // Utils
 const dateChecker = require('../utils/dateChecker');
+const integerPositiveChecker = require('../utils/IntegerPositiveChecker');
 const date_fns = require('date-fns');
 
 
@@ -28,7 +27,10 @@ class LessonDal {
         {
           model: Student,
           as: 'students',
-          through: { attributes: ['visit'] },
+          attributes: {
+            include: [[Sequelize.literal('"students->LessonStudent".visit'), 'visit']],
+          },
+          through: { attributes: [] },
         },
         {
           model: Teacher,
@@ -37,23 +39,47 @@ class LessonDal {
         }],
     };
 
-    queryOptions.limit = filter.lessonsPerPage || 5;
+    if (filter.lessonsPerPage) {
 
-    if (filter.page) {
-      queryOptions.offset = (filter.page - 1) * queryOptions.limit;
+      integerPositiveChecker(filter.lessonsPerPage, 'lessonPerPage');
+      queryOptions.limit = Number(filter.lessonsPerPage);
+
+    } else {
+      queryOptions.limit = 5;
     }
 
-    if (filter.teacherIds) {
-      queryOptions.include[1].where = {id: {[Op.in]: filter.teacherIds}};
+    if (filter.page) {
+
+      integerPositiveChecker(filter.page, 'page');
+      queryOptions.offset = (Number(filter.page) - 1) * queryOptions.limit;
     }
 
     const queryWhere = [];
 
-    if (filter.studentsCount !== null && filter.studentsCount !== undefined) { /* 0 is possible value */
-      const comparisonSign = typeof filter.studentsCount === 'number' ? '=' : 'BETWEEN';
+    if (filter.teacherIds) {
+
+      const teacherIds = filter.teacherIds.split(',').map(el => Number(el));
+      teacherIds.map(el => { integerPositiveChecker(el, 'teacherId') });
+
+      queryWhere.push(sequelize.where(sequelize.literal(`(SELECT array_agg(teacher_id::INTEGER) FROM lesson_teachers AS lesson_teachers WHERE
+            lesson_teachers.lesson_id = id)`), '&&', teacherIds));
+    }
+
+    if (filter.studentsCount) {
+
+      let comparisonSign = '=';
+      let studentsCount = Number(filter.studentsCount);
+
+      if (filter.studentsCount.length > 1) {
+        comparisonSign = 'BETWEEN';
+        studentsCount = filter.studentsCount.split(',').map(el => Number(el));
+        studentsCount.map(el => { integerPositiveChecker(el, 'studentsCount', true) })
+      } else {
+        integerPositiveChecker(studentsCount, 'studentsCount', true);
+      }
 
       queryWhere.push(sequelize.where(sequelize.literal(`(SELECT COUNT(*) FROM lesson_students AS lesson_students WHERE
-            lesson_students.lesson_id = id)`), comparisonSign, filter.studentsCount));
+            lesson_students.lesson_id = id)`), comparisonSign, studentsCount));
     }
 
     // Parsing date in filter
@@ -81,15 +107,18 @@ class LessonDal {
       }
     }
 
-    if (filter.status !== null && filter.status !== undefined) { /* 0 is possible value */
+    if (filter.status) {
+
+      if (isNaN(filter.status)) {
+        throw 'Invalid status value';
+      }
+
       queryWhere.push({ status: Number(filter.status) });
     }
 
     queryOptions.where = { [Op.and]: queryWhere };
 
-    const lessons = await Lesson.findAll(queryOptions);
-
-    return lessons.map(el => el.dataValues);
+    return await Lesson.findAll(queryOptions);
   }
 
   async create(body) {
@@ -115,6 +144,19 @@ class LessonDal {
 
     if (!body.teacherIds) {
       throw 'teacherIds is required';
+    } else {
+
+      if (!Array.isArray(body.teacherIds)) {
+        throw 'teacherIds must be array';
+      }
+
+      if (!body.teacherIds.length) {
+        throw 'teacherIds can not be void';
+      }
+
+      for (let teacherId of body.teacherIds) {
+        integerPositiveChecker(teacherId, 'teacherId');
+      }
     }
 
     let idCount = await Lesson.max('id');
@@ -147,7 +189,15 @@ class LessonDal {
     const lessonIds = lessons.map(el => el.id);
 
     await Lesson.bulkCreate(lessons);
-    await lessonTeacherDal.create(body.teacherIds, lessonIds);
+
+    try {
+      await lessonTeacherDal.create(body.teacherIds, lessonIds);
+
+    } catch (err) {
+
+      await Lesson.destroy({ where: { id: lessonIds } });
+      throw err;
+    }
 
     return lessonIds;
   }
