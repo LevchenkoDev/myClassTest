@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const express = require('express');
 const { Sequelize } = require('sequelize');
 const lessonRouter = require('./routes/lessons');
@@ -5,7 +7,7 @@ const bodyParser = require('body-parser');
 
 const PORT = 3000;
 
-const sequelize = new Sequelize('postgres://postgres:admin@localhost:5432/myclass');
+const sequelize = new Sequelize(process.env.DB_CONNECT);
 const app = express();
 
 app.use(express.json());

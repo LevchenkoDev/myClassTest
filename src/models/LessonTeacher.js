@@ -1,5 +1,5 @@
 const { Sequelize, DataTypes, Model } = require('sequelize');
-const sequelize = new Sequelize('postgres://postgres:admin@localhost:5432/myclass');
+const sequelize = new Sequelize(process.env.DB_CONNECT);
 
 class LessonTeacher extends Model {}
 
